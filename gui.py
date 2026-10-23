@@ -3,6 +3,7 @@ Graphical user interface for the Bunkr Downloader.
 """
 #import asyncio
 import io
+import json
 import logging
 import os
 import platform
@@ -16,7 +17,7 @@ import customtkinter as ctk
 from src.config import DOWNLOAD_FOLDER, MAX_RETRIES, MAX_WORKERS
 from src.version import __version__ as BACKEND_VERSION
 
-GUI_VERSION = "2026.08.03"
+GUI_VERSION = "2026.10.23"
 GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
 
 # When running from a PyInstaller bundle, sys.executable is the GUI's own .exe
@@ -46,6 +47,61 @@ def resource_path(relative_path):
     except AttributeError:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+SETTINGS_FILE = "settings.json"
+
+DEFAULT_SETTINGS = {
+    "download_folder": "",
+    "max_workers": MAX_WORKERS,
+    "max_retries": MAX_RETRIES,
+    "include": "",
+    "exclude": "",
+    "no_disk_check": False,
+    "no_download_folder": False,
+    "external_console": False,
+}
+
+
+def _clamp_int(value, low, high, default):
+    try:
+        return max(low, min(high, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def settings_path():
+    if IS_FROZEN:
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else os.path.abspath(".")
+    return os.path.join(base, SETTINGS_FILE)
+
+
+def load_settings():
+    path = settings_path()
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                merged = dict(DEFAULT_SETTINGS)
+                for key in DEFAULT_SETTINGS:
+                    if key in data:
+                        merged[key] = data[key]
+                return merged
+        except (OSError, ValueError, TypeError):
+            pass
+    return dict(DEFAULT_SETTINGS)
+
+
+def save_settings(settings):
+    path = settings_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except OSError:
+        pass
 
 
 class IORedirector(io.StringIO):
@@ -117,7 +173,10 @@ class DownloaderUI(ctk.CTk):
         # Left blank by default so the backend uses its own './Downloads/' — pre-filling
         # this with "Downloads" would pass --custom-path Downloads, and the backend
         # would create Downloads/Downloads/<album>/.
-        self.dest_var = ctk.StringVar(value="")
+        self._settings = load_settings()
+        self._settings["max_workers"] = _clamp_int(self._settings["max_workers"], 1, 5, MAX_WORKERS)
+        self._settings["max_retries"] = _clamp_int(self._settings["max_retries"], 1, 10, MAX_RETRIES)
+        self.dest_var = ctk.StringVar(value=self._settings["download_folder"])
 
         # Tab view
         self.tabs = ctk.CTkTabview(self)
@@ -151,6 +210,8 @@ class DownloaderUI(ctk.CTk):
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
         root_logger.addHandler(gui_handler)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Tab builders
@@ -293,12 +354,12 @@ class DownloaderUI(ctk.CTk):
         workers_frame = ctk.CTkFrame(tab, fg_color="transparent")
         workers_frame.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
         self.workers_label = ctk.CTkLabel(workers_frame,
-                                          text=str(MAX_WORKERS), width=24)
+                                          text=str(self._settings["max_workers"]), width=24)
         self.workers_label.pack(side="right")
         self.workers_slider = ctk.CTkSlider(workers_frame, from_=1, to=5,
                                             number_of_steps=4,
                                             command=self._on_workers_change)
-        self.workers_slider.set(MAX_WORKERS)
+        self.workers_slider.set(self._settings["max_workers"])
         self.workers_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
         row += 1
 
@@ -311,6 +372,8 @@ class DownloaderUI(ctk.CTk):
         self.settings_include = ctk.CTkEntry(
             tab, placeholder_text="e.g.  mp4  jpg  png  — leave blank for everything")
         self.settings_include.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
+        if self._settings["include"]:
+            self.settings_include.insert(0, self._settings["include"])
         row += 1
 
         ctk.CTkLabel(tab, text="Exclude (keywords):", anchor="w").grid(
@@ -318,6 +381,8 @@ class DownloaderUI(ctk.CTk):
         self.settings_exclude = ctk.CTkEntry(
             tab, placeholder_text="e.g.  .thumb  preview  sample")
         self.settings_exclude.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
+        if self._settings["exclude"]:
+            self.settings_exclude.insert(0, self._settings["exclude"])
         row += 1
 
         ctk.CTkLabel(tab,
@@ -336,22 +401,22 @@ class DownloaderUI(ctk.CTk):
         retries_frame = ctk.CTkFrame(tab, fg_color="transparent")
         retries_frame.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
         self.retries_label = ctk.CTkLabel(retries_frame,
-                                          text=str(MAX_RETRIES), width=24)
+                                          text=str(self._settings["max_retries"]), width=24)
         self.retries_label.pack(side="right")
         self.retries_slider = ctk.CTkSlider(retries_frame, from_=1, to=10,
                                             number_of_steps=9,
                                             command=self._on_retries_change)
-        self.retries_slider.set(MAX_RETRIES)
+        self.retries_slider.set(self._settings["max_retries"])
         self.retries_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
         row += 1
 
-        self.opt_no_disk_check = ctk.BooleanVar(value=False)
+        self.opt_no_disk_check = ctk.BooleanVar(value=self._settings["no_disk_check"])
         ctk.CTkCheckBox(tab, text="Skip disk space check before downloading",
                         variable=self.opt_no_disk_check).grid(
             row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
         row += 1
 
-        self.opt_no_dl_folder = ctk.BooleanVar(value=False)
+        self.opt_no_dl_folder = ctk.BooleanVar(value=self._settings["no_download_folder"])
         ctk.CTkCheckBox(tab,
                         text='Skip the "Downloads" subfolder when using the default path '
                              "(a custom save folder already skips it automatically)",
@@ -359,7 +424,7 @@ class DownloaderUI(ctk.CTk):
             row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
         row += 1
 
-        self.opt_external_console = ctk.BooleanVar(value=False)
+        self.opt_external_console = ctk.BooleanVar(value=self._settings["external_console"])
         ctk.CTkCheckBox(
             tab,
             text="Show detailed CLI window during downloads "
@@ -453,6 +518,22 @@ class DownloaderUI(ctk.CTk):
 
     def _on_retries_change(self, value):
         self.retries_label.configure(text=str(int(value)))
+
+    def _collect_settings(self):
+        return {
+            "download_folder": self.dest_var.get().strip(),
+            "max_workers": int(round(self.workers_slider.get())),
+            "max_retries": int(round(self.retries_slider.get())),
+            "include": self.settings_include.get().strip(),
+            "exclude": self.settings_exclude.get().strip(),
+            "no_disk_check": bool(self.opt_no_disk_check.get()),
+            "no_download_folder": bool(self.opt_no_dl_folder.get()),
+            "external_console": bool(self.opt_external_console.get()),
+        }
+
+    def _on_close(self):
+        save_settings(self._collect_settings())
+        self.destroy()
 
     def _log(self, text, tag=None):
         """Append text to the log textbox — safe to call from any thread."""
