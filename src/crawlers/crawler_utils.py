@@ -5,15 +5,20 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import aiohttp
 from bs4 import BeautifulSoup
 
-from src.file_utils import remove_invalid_characters
-from src.general_utils import fetch_page
-from src.url_utils import get_url_based_filename
+from src.misc.file_utils import remove_invalid_characters
+from src.misc.general_utils import fetch_page
+from src.misc.url_utils import get_url_based_filename
 
 from .api_utils import get_api_response
+from .date_utils import extract_item_dates, get_item_date
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 
 def has_cached_item_pages(cached_state: dict | None, identifier: str) -> bool:
@@ -51,7 +56,6 @@ def extract_item_pages(soup: BeautifulSoup, host_page: str) -> list[str] | None:
                 "href": True,
             },
         )
-
         return [f"{host_page}{item.get('href')}" for item in items]
 
     except AttributeError:
@@ -63,8 +67,8 @@ async def extract_all_album_item_pages(
     initial_soup: BeautifulSoup,
     host_page: str,
     url: str,
-) -> list[str]:
-    """Collect item page links from an album, including pagination."""
+) -> tuple[list[str], dict[str, datetime | None]]:
+    """Collect item page links (and their dates) from an album, incl. pagination."""
     if initial_soup is None:
         error_message = f"Failed to parse album landing page: {url}"
         raise RuntimeError(error_message)
@@ -74,6 +78,10 @@ async def extract_all_album_item_pages(
     if item_pages is None:
         error_message = f"Unable to extract album items from {url}"
         raise RuntimeError(error_message)
+
+    item_dates: dict[str, datetime | None] = dict(
+        zip(item_pages, extract_item_dates(initial_soup), strict=False),
+    )
 
     next_album_pages = extract_next_album_pages(initial_soup, url)
     if next_album_pages is not None:
@@ -86,8 +94,11 @@ async def extract_all_album_item_pages(
 
             next_item_pages = extract_item_pages(next_page_soup, host_page)
             item_pages.extend(next_item_pages)
+            item_dates.update(
+                zip(next_item_pages, extract_item_dates(next_page_soup), strict=False),
+            )
 
-    return item_pages
+    return item_pages, item_dates
 
 
 async def get_item_download_link(
@@ -137,12 +148,42 @@ def get_item_filename(item_soup: BeautifulSoup) -> str:
         return item_filename
 
 
-def format_item_filename(original_filename: str, url_based_filename: str) -> str:
+async def get_download_info(
+    item_url: str,
+    item_soup: BeautifulSoup,
+    *,
+    clean_name: bool,
+) -> tuple:
+    """Gather download information (link, filename and date) for the item."""
+    async with aiohttp.ClientSession() as session:
+        item_download_link = await get_item_download_link(
+            session,
+            item_url,
+            soup=item_soup,
+        )
+
+    item_date = get_item_date(item_soup)
+    item_filename = get_item_filename(item_soup)
+    if clean_name:
+        return item_download_link, item_filename, item_date
+
+    url_based_filename = (
+        get_url_based_filename(item_download_link) if item_download_link else None
+    )
+    formatted_item_filename = (
+        _format_item_filename(item_filename, url_based_filename)
+        if url_based_filename
+        else item_filename
+    )
+    return item_download_link, formatted_item_filename, item_date
+
+
+def _format_item_filename(original_filename: str, url_based_filename: str) -> str:
     """Combine two filenames while preserving the extension of the first.
 
-    If the filenames are identical, returns the first filename.
-    If the base of the first filename is found within the second, returns the second
-    filename. Otherwise, combines both bases with a hyphen.
+    If the filenames are identical, returns the first filename. If the base of the first
+    filename is found within the second, returns the second filename. Otherwise,
+    combines both bases with a hyphen.
     """
     if original_filename == url_based_filename:
         return original_filename
@@ -152,28 +193,13 @@ def format_item_filename(original_filename: str, url_based_filename: str) -> str
     extension = Path(original_filename).suffix
     url_base = Path(url_based_filename).stem
 
-    if original_base in url_base:
+    has_matching_prefix = url_base.startswith((
+        f"{original_base}-",
+        f"{original_base}_",
+    ))
+    if url_base == original_base or has_matching_prefix:
         return url_based_filename
 
     # Combine the base names with a hyphen and append the extension
     valid_original_base = remove_invalid_characters(original_base)
     return f"{valid_original_base}-{url_base}{extension}"
-
-
-async def get_download_info(item_url: str, item_soup: BeautifulSoup) -> tuple:
-    """Gather download information (link and filename) for the item."""
-    async with aiohttp.ClientSession() as session:
-        item_download_link = await get_item_download_link(
-            session, item_url, soup=item_soup,
-        )
-
-    item_filename = get_item_filename(item_soup)
-    url_based_filename = (
-        get_url_based_filename(item_download_link) if item_download_link else None
-    )
-    formatted_item_filename = (
-        format_item_filename(item_filename, url_based_filename)
-        if url_based_filename
-        else item_filename
-    )
-    return item_download_link, formatted_item_filename

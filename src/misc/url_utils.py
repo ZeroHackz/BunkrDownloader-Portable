@@ -15,13 +15,9 @@ import uuid
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
-from .config import (
-    FALLBACK_DOMAIN,
-    MEDIA_SLUG_REGEX,
-    URL_TYPE_MAPPING,
-    VALID_SLUG_REGEX,
-    SkippedReason,
-)
+from src.config import FALLBACK_DOMAIN, MEDIA_SLUG_REGEX, VALID_SLUG_REGEX
+from src.enums import SkippedReason, UrlType
+from src.models import URL_TYPE_MAPPING
 
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
@@ -64,20 +60,21 @@ def replace_domain_with_fallback(url: str) -> str:
     return urlunparse(updated_url)
 
 
-def check_url_type(url: str) -> bool:
+def resolve_url_type(url: str) -> UrlType:
     """Determine whether the provided URL corresponds to an album or a single file."""
     try:
         url_type = url.rstrip("/").split("/")[-2]
 
     except IndexError:
-        log_message = f"Invalid URL format for: {url}"
-        logging.exception(log_message)
+        logging.warning("Invalid URL format for: %s", url)
 
     if url_type in URL_TYPE_MAPPING:
         return URL_TYPE_MAPPING[url_type]
 
-    log_message = f"Invalid URL format for: {url}. Unexpected URL type '{url_type}'."
-    logging.warning(log_message)
+    logging.warning(
+        "Invalid URL format for: %s. Unexpected URL type '%s'",
+        url, url_type,
+    )
     sys.exit(1)
 
 
@@ -103,14 +100,14 @@ def get_identifier(url: str, soup: BeautifulSoup | None = None) -> str:
     decoded_url = unquote(url)
 
     try:
-        is_album = check_url_type(decoded_url)
+        url_type = resolve_url_type(decoded_url)
         return (
-            get_album_id(decoded_url) if is_album else get_media_slug(decoded_url, soup)
+            get_album_id(decoded_url) if url_type.ALBUM
+            else get_media_slug(decoded_url, soup)
         )
 
     except IndexError:
-        log_message = f"Error extracting the identifier from: {url}"
-        logging.exception(log_message)
+        logging.warning("Error extracting the identifier from: %s", url)
 
     return url
 
@@ -121,8 +118,7 @@ def get_album_id(url: str) -> str:
         return url.rstrip("/").split("/")[-1]
 
     except IndexError:
-        log_message = f"Invalid URL format for: {url}"
-        logging.exception(log_message)
+        logging.warning("Invalid URL format for: %s", url)
         sys.exit(1)
 
 
@@ -192,8 +188,7 @@ def get_item_type(item_page: str) -> str | None:
         return item_page.rstrip("/").split("/")[-2]
 
     except AttributeError:
-        log_message = f"Error extracting the item type from {item_page}"
-        logging.exception(log_message)
+        logging.warning("Error extracting the item type from %s", item_page)
 
     return None
 

@@ -81,7 +81,7 @@ python downloader.py <bunkr_url>
 
 ### Selective & Batch Downloads
 
-All the original flags like `--ignore`, `--include`, and batch downloading via `URLs.txt` are still supported. The recent upstream sync also adds `--custom-path`, `--max-retries`, `--disable-disk-check`, `--no-download-folder`, and `--version`.
+All the original flags like `--ignore`, `--include`, and batch downloading via `URLs.txt` are still supported, along with `--custom-path`, `--no-download-folder`, `--no-album-folder`, `--clean-name`, `--max-retries`, `--connections`, `--rate-limit`, `--dry-run`, `--disable-disk-check`, and `--version`.
  
 For more details, please refer to the [Lysagxra README](https://github.com/Lysagxra/BunkrDownloader/blob/main/README.md).
 

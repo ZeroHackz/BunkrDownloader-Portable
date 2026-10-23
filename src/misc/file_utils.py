@@ -13,18 +13,20 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .config import (
+from src.config import (
     BACKUP_FOLDER,
     DOWNLOAD_FOLDER,
     MAX_FILENAME_LEN,
     SESSION_LOG,
     URLS_FILE,
     VALID_CHARACTERS_REGEX,
-    DownloadInfo,
-    FailedReason,
-    SkippedReason,
 )
+from src.models import DownloadInfo
+
+if TYPE_CHECKING:
+    from src.enums import FailedReason, SkippedReason
 
 
 def read_file(filename: str) -> list[str]:
@@ -40,6 +42,12 @@ def write_file(filename: str, content: str = "") -> None:
     """
     with Path(filename).open("w", encoding="utf-8") as file:
         file.write(content)
+
+
+def append_suffix(path: str | Path, suffix: str) -> Path:
+    """Append a suffix to the filename without replacing its extension."""
+    path = Path(path)
+    return path.with_name(path.name + suffix)
 
 
 def log_session_start() -> None:
@@ -131,9 +139,8 @@ def create_download_directory(
     try:
         download_path.mkdir(parents=True, exist_ok=True)
 
-    except OSError as os_err:
-        log_message = f"Error creating 'Downloads' directory: {os_err}"
-        logging.exception(log_message)
+    except OSError:
+        logging.warning("Error creating 'Downloads' directory.")
         sys.exit(1)
 
     return str(download_path)
@@ -146,9 +153,8 @@ def create_urls_file_backup() -> None:
     try:
         backup_folder.mkdir(parents=True, exist_ok=True)
 
-    except OSError as os_err:
-        log_message = f"Error creating 'Backups' directory: {os_err}"
-        logging.exception(log_message)
+    except OSError:
+        logging.warning("Error creating 'Backups' directory.")
         sys.exit(1)
 
     timestamp = datetime.now(timezone.utc).strftime("%d%m%Y_%H%M%S")
@@ -179,6 +185,29 @@ def truncate_filename(filename: str) -> str:
     return str(filename_path.with_name(formatted_filename))
 
 
+def reserve_unique_filename(
+    filename: str,
+    reserved_names: set[str] | None = None,
+) -> str:
+    """Pick the first filename not yet claimed in this run, using '(N)' suffixes.
+
+    Only names reserved earlier in the same run are avoided; files already on disk are
+    deliberately NOT taken into account. Numbering exists to separate distinct items of
+    the same album that share an original filename, so a given item must resolve to the
+    same name on every run -- otherwise a re-run would pick a fresh '(N)' name for an
+    item that is already downloaded and fetch it all over again. Files that already
+    exist are handled later, by the regular already-downloaded skip.
+    """
+    index = 0
+
+    while True:
+        candidate = _build_numbered_filename(filename, index)
+        if not reserved_names or candidate not in reserved_names:
+            return candidate
+
+        index += 1
+
+
 def matches_ignore_list(filename: str, ignore_list: list[str] | None) -> bool:
     """Return True if filename matches any word in the --ignore list."""
     return bool(ignore_list) and any(word in filename for word in ignore_list)
@@ -192,3 +221,21 @@ def matches_include_list(filename: str, include_list: list[str] | None) -> bool:
     predicates compose the same way at call sites.
     """
     return bool(include_list) and all(word not in filename for word in include_list)
+
+
+def _build_numbered_filename(filename: str, index: int) -> str:
+    """Return filename formatted as 'name (index).ext' when index > 0.
+
+    The base name is sanitized and truncated so the extension and numbering suffix
+    always fit within MAX_FILENAME_LEN.
+    """
+    filename_path = Path(filename)
+    extension = filename_path.suffix
+    base_name = remove_invalid_characters(filename_path.stem) or "file"
+    suffix = "" if index == 0 else f" ({index})"
+
+    available_len = max(1, MAX_FILENAME_LEN - len(extension) - len(suffix))
+    base_name = base_name[:available_len]
+
+    numbered_filename = f"{base_name}{suffix}{extension}"
+    return str(filename_path.with_name(numbered_filename))

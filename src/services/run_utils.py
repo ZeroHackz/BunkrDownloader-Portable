@@ -6,10 +6,14 @@ from argparse import Namespace
 
 from rich.console import Console
 
-from downloader import execute_url_dry_run, initialize_managers, validate_and_download
+from downloader import (
+    execute_dry_run_for_url,
+    initialize_managers,
+    validate_and_download,
+)
 from src.config import KB
 from src.managers.live_manager import LiveManager
-from src.rate_limiter import RateLimiter
+from src.managers.rate_limiter import RateLimiter
 
 
 async def process_one_url(
@@ -40,12 +44,14 @@ async def process_one_url(
 
 
 async def inspect_urls(
-    urls: list[str], bunkr_status: dict[str, str], args: Namespace,
+    urls: list[str],
+    bunkr_status: dict[str, str],
+    args: Namespace,
 ) -> list[str]:
     """Execute a dry-run preview for a list of URLs without downloading anything."""
     console = Console()
     for url in urls:
-        await execute_url_dry_run(bunkr_status, url, args, console)
+        await execute_dry_run_for_url(bunkr_status, url, args, console)
 
     return []
 
@@ -71,13 +77,16 @@ async def run_sequential(
 ) -> list[str]:
     """Process URLs sequentially and return those that failed."""
     live_manager = build_live_manager(args)
-
     failed_urls: list[str] = []
 
     with live_manager.live:
         for url in urls:
             failed = await process_one_url(
-                bunkr_status, url, live_manager, args, rate_limiter,
+                bunkr_status,
+                url,
+                live_manager,
+                args,
+                rate_limiter,
             )
             if failed:
                 failed_urls.append(url)
@@ -110,7 +119,11 @@ async def run_concurrent(
     async def _bounded(url: str) -> tuple[str, bool]:
         async with semaphore:
             failed = await process_one_url(
-                bunkr_status, url, live_manager, args, rate_limiter,
+                bunkr_status,
+                url,
+                live_manager,
+                args,
+                rate_limiter,
             )
             return url, failed
 
@@ -119,6 +132,7 @@ async def run_concurrent(
         live_manager.stop()
 
     return [url for url, failed in results if failed]
+
 
 def log_failed_urls(failed_urls: list[str]) -> None:
     """Log a summary and list of failed URLs."""

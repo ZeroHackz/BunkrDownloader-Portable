@@ -17,7 +17,8 @@ from rich.console import Group
 from rich.live import Live
 from rich.text import Text
 
-from src.config import REFRESH_PER_SECOND, TASK_REASON_MAPPING, TaskResult
+from src.config import REFRESH_PER_SECOND
+from src.enums import TASK_REASON_MAPPING, TaskResult
 from src.version import get_version_string
 
 from .log_manager import LoggerTable
@@ -119,7 +120,7 @@ class LiveManager:
         footer = Align.left(footer_text)
         return Group(
             self.progress_table,
-            self.logger_table.render_log_panel(panel_width=2 * panel_width),
+            self.logger_table.render_log_panel(panel_width=2*panel_width),
             footer,
         )
 
@@ -132,7 +133,6 @@ class LiveManager:
         hours = time_delta.seconds // 3600
         minutes = (time_delta.seconds % 3600) // 60
         seconds = time_delta.seconds % 60
-
         return f"{hours:02} hrs {minutes:02} mins {seconds:02} secs"
 
     def _log_results_summary(self) -> None:

@@ -16,8 +16,14 @@ from rich.table import Table
 from src.config import DOWNLOAD_HEADERS, KB, MAX_WORKERS
 from src.crawlers.crawler_utils import get_download_info
 from src.downloaders.download_utils import detect_range_support
-from src.file_utils import matches_ignore_list, matches_include_list, truncate_filename
-from src.general_utils import fetch_page
+from src.misc.file_utils import (
+    matches_ignore_list,
+    matches_include_list,
+    reserve_unique_filename,
+    truncate_filename,
+)
+from src.misc.general_utils import fetch_page
+from src.models import AlbumInfo, ResolveContext
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -64,39 +70,59 @@ def _get_filter_status(filename: str, args: Namespace) -> str | None:
     return None
 
 
-async def _resolve_item(
+def _get_cached_result(
     item_page: str,
-    session_info: SessionInfo,
-    cached_items: dict[str, dict],
-    semaphore: asyncio.Semaphore,
-) -> dict:
-    """Resolve filename, size and status for one item without downloading it."""
-    async with semaphore:
-        cached = cached_items.get(item_page)
-        if cached and cached.get("status") == "completed":
-            filename = cached.get("filename", "")
-            file_path = Path(session_info.download_path) / truncate_filename(filename)
+    context: ResolveContext,
+) -> dict | None:
+    """Return the cached result if the item has already been downloaded."""
+    cached = context.cached_items.get(item_page)
+    if not cached or cached.get("status") != "completed":
+        return None
 
-            if file_path.exists():
-                return {
-                    "filename": filename,
-                    "size": file_path.stat().st_size,
-                    "status": "already_downloaded",
-                }
+    filename = cached.get("filename", "")
+    file_path = Path(context.session_info.download_path) / truncate_filename(filename)
+    if not file_path.exists():
+        return None
+
+    return {
+        "filename": filename,
+        "size": file_path.stat().st_size,
+        "status": "already_downloaded",
+    }
+
+
+async def _resolve_item(item_page: str, context: ResolveContext) -> dict:
+    """Resolve filename, size and status for one item without downloading it."""
+    async with context.semaphore:
+        cached_result = _get_cached_result(item_page, context)
+        if cached_result:
+            return cached_result
 
         item_soup = await fetch_page(item_page)
         if item_soup is None:
             return {"filename": item_page, "size": None, "status": "fetch_failed"}
 
-        download_link, filename = await get_download_info(item_page, item_soup)
+        download_link, filename, _ = await get_download_info(
+            item_page, item_soup, clean_name=context.session_info.args.clean_name,
+        )
         if not download_link:
             return {"filename": filename, "size": None, "status": "unresolved"}
 
-        filter_status = _get_filter_status(filename, session_info.args)
+        if context.session_info.args.clean_name:
+            async with context.reservation_lock:
+                filename = reserve_unique_filename(
+                    filename,
+                    context.reserved_names,
+                )
+                context.reserved_names.add(filename)
+
+        filter_status = _get_filter_status(filename, context.session_info.args)
         if filter_status:
             return {"filename": filename, "size": None, "status": filter_status}
 
-        final_path = Path(session_info.download_path) / truncate_filename(filename)
+        final_path = (
+            Path(context.session_info.download_path) / truncate_filename(filename)
+        )
         if final_path.exists():
             return {
                 "filename": filename,
@@ -136,40 +162,57 @@ def process_results_rows(results: list[dict], table: Table) -> tuple[int, dict]:
 
 
 async def execute_dry_run(
-    album_id: str,
-    item_pages: list[str],
+    album_info: AlbumInfo,
     session_info: SessionInfo,
-    cached_items: dict[str, dict],
     console: Console,
 ) -> None:
     """Print a preview table of what a download would do, without downloading."""
     semaphore = asyncio.Semaphore(MAX_WORKERS)
+    reserved_names: set[str] = set()
+    reservation_lock = asyncio.Lock()
+    context = ResolveContext(
+        session_info=session_info,
+        cached_items=album_info.cached_items,
+        item_dates=album_info.item_dates,
+        semaphore=semaphore,
+        reserved_names=reserved_names,
+        reservation_lock=reservation_lock,
+    )
     results = await asyncio.gather(
-        *(
-            _resolve_item(page, session_info, cached_items, semaphore)
-            for page in item_pages
-        ),
+        *(_resolve_item(item_page, context) for item_page in album_info.item_pages),
     )
 
-    table = Table(title=f"Dry run — {album_id} ({len(item_pages)} item(s))")
+    table = Table(title=f"Dry run for ID: {album_info.album_id}")
     table.add_column("Filename", overflow="fold")
     table.add_column("Size", justify="right")
     table.add_column("Status")
     total_download_bytes, counts = process_results_rows(results, table)
 
     console.print(table)
+    _print_dry_run_summary(console, total_download_bytes, counts)
+
+
+def _print_dry_run_summary(
+    console: Console,
+    total_download_bytes: int,
+    counts: dict[str, int],
+) -> None:
+    """Print the summary of a dry-run operation."""
+    would_download = counts.get("would_download", 0)
+    already_downloaded = counts.get("already_downloaded", 0)
+    filtered = counts.get("filtered_ignore", 0) + counts.get("filtered_include", 0)
+    unresolved = counts.get("unresolved", 0) + counts.get("fetch_failed", 0)
+
     console.print(
-        f"\nWould download: {counts.get('would_download', 0)} file(s), "
-        f"{_format_size(total_download_bytes)} total",
+        f"\nWould download: {would_download} file(s), "
+        f"{_format_size(total_download_bytes)} total\n",
     )
 
-    if counts.get("already_downloaded"):
-        console.print(f"Already downloaded: {counts['already_downloaded']} file(s)")
+    if already_downloaded:
+        console.print(f"Already downloaded: {already_downloaded} file(s)")
 
-    filtered = counts.get("filtered_ignore", 0) + counts.get("filtered_include", 0)
     if filtered:
         console.print(f"Filtered out: {filtered} file(s)")
 
-    unresolved = counts.get("unresolved", 0) + counts.get("fetch_failed", 0)
     if unresolved:
         console.print(f"[red]Could not resolve: {unresolved} file(s)[/red]")

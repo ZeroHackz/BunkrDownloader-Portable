@@ -19,29 +19,28 @@ from requests.exceptions import ChunkedEncodingError, RequestException
 from src.config import (
     CHUNK_BASE_DELAY,
     CHUNK_MAX_RETRIES,
-    LARGE_FILE_CHUNK_SIZE,
+    CHUNK_SIZE_THRESHOLDS,
+    DEFAULT_CHUNK_SIZE,
     MAX_WORK_UNIT_SIZE,
     MIN_PARALLEL_SIZE,
     MIN_WORK_UNIT_SIZE,
-    THRESHOLDS,
     UNITS_PER_CONNECTION,
-    ChunkInfo,
-    DownloadConfig,
-    DownloadPlan,
 )
+from src.misc.file_utils import append_suffix
+from src.models import ChunkInfo, DownloadConfig, DownloadPlan
 
 if TYPE_CHECKING:
     from src.managers.live_manager import LiveManager
-    from src.rate_limiter import RateLimiter
+    from src.managers.rate_limiter import RateLimiter
 
 
 def get_chunk_size(file_size: int) -> int:
     """Determine the optimal chunk size based on the file size."""
-    for threshold, chunk_size in THRESHOLDS:
+    for threshold, chunk_size in CHUNK_SIZE_THRESHOLDS:
         if file_size < threshold:
             return chunk_size
 
-    return LARGE_FILE_CHUNK_SIZE
+    return DEFAULT_CHUNK_SIZE
 
 
 def save_file_with_progress(
@@ -53,17 +52,19 @@ def save_file_with_progress(
 ) -> bool:
     """Save the file from the response to the specified path.
 
-    Adds a `.temp` extension while downloading. Handles network interruptions
-    such as IncompleteRead and ConnectionResetError (wrapped in
-    ChunkedEncodingError) by marking the download as incomplete.
+    Appends a `.temp` extension while downloading. Handles network interruptions such as
+    IncompleteRead and ConnectionResetError (wrapped in ChunkedEncodingError) by marking
+    the download as incomplete.
 
-    Returns True on failure (partial file kept), False on success.
+    Returns:
+        True on failure (partial file kept), False on success.
+
     """
     file_size = int(response.headers.get("Content-Length", -1))
     if file_size == -1:
         logging.warning("Content length not provided in response headers.")
 
-    temp_download_path = Path(download_path).with_suffix(".temp")
+    temp_download_path = append_suffix(download_path, ".temp")
     chunk_size = get_chunk_size(file_size)
     total_downloaded = 0
 
@@ -72,8 +73,10 @@ def save_file_with_progress(
             for chunk in response.iter_content(chunk_size=chunk_size):
                 if chunk is not None:
                     file.write(chunk)
+
                     if rate_limiter:
                         rate_limiter.consume(len(chunk))
+
                     total_downloaded += len(chunk)
                     completed = (total_downloaded / file_size) * 100
                     live_manager.update_task(task, completed=completed)
@@ -117,9 +120,9 @@ def should_use_parallel_download(
     """Return True when conditions are met for a parallel chunked download.
 
     Parallel download requires:
-    - Server supports byte-range requests.
-    - File size is known and exceeds MIN_PARALLEL_SIZE.
-    - More than one connection is requested.
+        - Server supports byte-range requests.
+        - File size is known and exceeds MIN_PARALLEL_SIZE.
+        - More than one connection is requested.
     """
     return (
         supports_range and content_length >= MIN_PARALLEL_SIZE and num_connections > 1
@@ -130,12 +133,12 @@ def _compute_unit_ranges(
     content_length: int,
     num_connections: int,
 ) -> list[tuple[int, int]]:
-    """Split the file into many small work units for work-stealing download.
+    """Split the file into many small work units for work-stealing downloads.
 
-    The file is divided into roughly UNITS_PER_CONNECTION times more units than
-    worker threads, each sized between MIN_WORK_UNIT_SIZE and MAX_WORK_UNIT_SIZE.
-    Worker threads pull units from a shared queue as they finish, so a slow connection
-    only delays its own next unit instead of blocking threads that finished early.
+    The file is divided into roughly UNITS_PER_CONNECTION times more units than worker
+    threads, each sized between MIN_WORK_UNIT_SIZE and MAX_WORK_UNIT_SIZE. Worker
+    threads pull units from a shared queue as they finish, so a slow connection only
+    delays its own next unit instead of blocking threads that finished early.
 
     The last unit absorbs any remainder so the entire file is always covered.
     """
@@ -147,8 +150,8 @@ def _compute_unit_ranges(
         1,
     )
     num_units = (content_length + unit_size - 1) // unit_size  # ceil division
-    ranges = []
 
+    ranges = []
     for indx in range(num_units):
         start_byte = indx * unit_size
         end_byte = (
@@ -161,7 +164,7 @@ def _compute_unit_ranges(
 
 def _plan_path(base_path: Path) -> Path:
     """Return the sidecar metadata path storing the chunk partition plan."""
-    return Path(f"{base_path}.bunkrparts")
+    return append_suffix(base_path, ".bunkrparts")
 
 
 def _load_or_create_plan(
@@ -172,9 +175,9 @@ def _load_or_create_plan(
     """Load a previously persisted chunk plan, or compute and save a new one.
 
     Persisting the plan ensures that resuming a download after changing --connections
-    (or across separate runs) reuses the exact same byte ranges. Without this, a
-    stale .partN file could coincidentally match the expected size of a different
-    range under a new plan and be silently merged as corrupt data.
+    (or across separate runs) reuses the exact same byte ranges. Without this, a stale
+    .partN file could coincidentally match the expected size of a different range under
+    a new plan and be silently merged as corrupt data.
     """
     plan_path = _plan_path(base_path)
 
@@ -203,7 +206,7 @@ def _load_or_create_plan(
 
 def _chunk_path(base_path: Path, index: int) -> Path:
     """Return the .partN path for the given chunk index."""
-    return base_path.with_suffix(f".part{index}")
+    return append_suffix(base_path, f".part{index}")
 
 
 def _attempt_chunk_once(
@@ -224,8 +227,8 @@ def _attempt_chunk_once(
     """
     start_byte = byte_range[0]
     end_byte = byte_range[1]
-
     expected = end_byte - start_byte + 1
+
     chunk_headers = {**chunk_info.headers, "Range": f"bytes={start_byte}-{end_byte}"}
     written = 0
 
@@ -238,7 +241,7 @@ def _attempt_chunk_once(
         ) as response:
             response.raise_for_status()
             with path.open("wb") as file:
-                for data in response.iter_content(chunk_size=LARGE_FILE_CHUNK_SIZE):
+                for data in response.iter_content(chunk_size=DEFAULT_CHUNK_SIZE):
                     if data:
                         file.write(data)
                         num_bytes = len(data)
@@ -268,9 +271,9 @@ def _download_single_chunk(
 ) -> bool:
     """Download one byte-range chunk to disk, retrying with backoff on failure.
 
-    Skips the download entirely when the .partN file already has the correct
-    size, enabling seamless resume across sessions. Each retry re-downloads
-    the chunk from scratch (the previous, incomplete attempt is overwritten).
+    Skips the download entirely when the .partN file already has the correct size,
+    enabling seamless resume across sessions. Each retry re-downloads the chunk from
+    scratch (the previous, incomplete attempt is overwritten).
 
     Returns:
         True on failure (all retries exhausted), False on success.
@@ -286,15 +289,7 @@ def _download_single_chunk(
         return False
 
     for attempt in range(1, CHUNK_MAX_RETRIES + 1):
-        failed = _attempt_chunk_once(
-            url,
-            (start_byte, end_byte),
-            path,
-            # headers,
-            # on_progress,
-            # rate_limiter,
-            chunk_info,
-        )
+        failed = _attempt_chunk_once(url, (start_byte, end_byte), path, chunk_info)
         if not failed:
             return False
 
@@ -389,11 +384,19 @@ def verify_chunks(chunk_paths: list[Path], expected_sizes: list[int]) -> bool:
 
 
 def merge_chunks(chunk_paths: list[Path], final_path: Path) -> None:
-    """Concatenate ordered .partN files into the final destination file."""
-    with final_path.open("wb") as destination_file:
+    """Concatenate ordered .partN files into the final destination file.
+
+    The chunks are merged into a `.temp` file that is renamed into place only once
+    complete. Otherwise an interrupted merge would leave a truncated file at the final
+    path, which later runs would skip as already downloaded.
+    """
+    temp_path = append_suffix(final_path, ".temp")
+    with temp_path.open("wb") as destination_file:
         for chunk_path in chunk_paths:
             with chunk_path.open("rb") as chunk_file:
                 shutil.copyfileobj(chunk_file, destination_file)
+
+    temp_path.replace(final_path)
 
 
 def cleanup(chunk_paths: list[Path], base_path: Path) -> None:
@@ -415,10 +418,9 @@ def save_file_with_chunks(
 ) -> bool:
     """Download a file using parallel byte-range chunks with resume support.
 
-    Each chunk is saved to a dedicated .partN file so that an interrupted
-    download can resume from where it left off on the next run.  Once all
-    chunks are verified, they are merged into the final file and the
-    temporary .partN files are removed.
+    Each chunk is saved to a dedicated .partN file so that an interrupted download can
+    resume from where it left off on the next run. Once all chunks are verified, they
+    are merged into the final file and the temporary .partN files are removed.
 
     Returns:
         True on failure (.partN files kept for next resume), False on success.

@@ -27,10 +27,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 class LoggerTable:
     """Class for logging events and displaying them in a table with scrolling rows."""
 
-    def __init__(
-        self,
-        max_rows: int = 4,
-    ) -> None:
+    def __init__(self, max_rows: int = 4) -> None:
         """Initialize the table with a circular buffer for scrolling rows."""
         # Circular buffer for scrolling rows
         self.row_buffer = deque(maxlen=max_rows)
@@ -48,8 +45,7 @@ class LoggerTable:
             self.row_buffer.append((timestamp, event, details))
 
         else:
-            log_message = f"[{timestamp}] Event: {event} | Details: {details}"
-            logging.info(log_message)
+            logging.info("[%s] Event: %s | Details: %s", timestamp, event, details)
 
     def render_log_panel(self, panel_width: int = 40) -> Panel:
         """Render the log panel containing the log table."""
@@ -58,12 +54,14 @@ class LoggerTable:
             log_table,
             title=f"[bold {self.title_color}]Log Messages",
             border_style=self.border_style,
-            width=2 * panel_width,  # Log panel width is double the single table width
+            width=2*panel_width,  # Log panel width is double the single table width
         )
 
     # Private methods
     def _calculate_column_widths(
-        self, min_column_widths: dict, padding: int = 10,
+        self,
+        min_column_widths: dict,
+        padding: int = 10,
     ) -> dict:
         """Calculate the column widths based on the terminal width."""
         terminal_width, _ = shutil.get_terminal_size()
