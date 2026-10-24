@@ -1,0 +1,44 @@
+name: Build Linux AppImage
+
+on:
+  push:
+    tags:
+      - "GUIv*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    # Oldest supported runner = oldest glibc the AppImage requires, so it
+    # also runs on older distros, not just on what the developer builds on.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build AppImage
+        run: ./build.sh
+
+      - name: Smoke test
+        # The CLI runs `clear` on start, which fails without a TERM.
+        env:
+          TERM: xterm
+        run: |
+          chmod +x dist/BunkrDownloader-x86_64.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/BunkrDownloader-x86_64.AppImage --cli --help
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: BunkrDownloader-x86_64.AppImage
+          path: dist/BunkrDownloader-x86_64.AppImage
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/BunkrDownloader-x86_64.AppImage

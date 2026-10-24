@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import platform
+import shutil
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -71,7 +73,11 @@ def _clamp_int(value, low, high, default):
 
 
 def settings_path():
-    if IS_FROZEN:
+    if os.environ.get("APPIMAGE"):
+        # Inside an AppImage sys.executable lives on a read-only mount; keep
+        # settings next to the .AppImage file instead (portable, like the .exe).
+        base = os.path.dirname(os.environ["APPIMAGE"])
+    elif IS_FROZEN:
         base = os.path.dirname(sys.executable)
     else:
         base = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else os.path.abspath(".")
@@ -102,6 +108,34 @@ def save_settings(settings):
             json.dump(settings, f, indent=2)
     except OSError:
         pass
+
+
+def _open_in_file_manager(path):
+    """Open `path` in the OS file manager. No-op if the path doesn't exist."""
+    if not os.path.isdir(path):
+        return
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(path)  # noqa: S606
+    elif system == "Darwin":
+        subprocess.run(["open", path], check=False)
+    else:
+        subprocess.run(["xdg-open", path], check=False)
+
+
+def _find_terminal_emulator():
+    """Return an argv prefix that opens a new terminal window running a command,
+    or None if no supported terminal emulator is found on this system (Linux/macOS)."""
+    for term, run_flag in (
+        ("x-terminal-emulator", "-e"),
+        ("gnome-terminal", "--"),
+        ("konsole", "-e"),
+        ("xfce4-terminal", "-e"),
+        ("xterm", "-e"),
+    ):
+        if shutil.which(term):
+            return [term, run_flag]
+    return None
 
 
 class IORedirector(io.StringIO):
@@ -160,11 +194,7 @@ class DownloaderUI(ctk.CTk):
         self._url_index = 0               # 1-based URL index in the current batch
         self._url_total = 0               # Total URLs in the current batch
 
-        try:
-            icon_path = resource_path(os.path.join("misc", "gui", "icons", "icon.ico"))
-            self.after(200, lambda: self.iconbitmap(icon_path))
-        except Exception:
-            pass
+        self.after(200, self._set_window_icon)
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -343,7 +373,7 @@ class DownloaderUI(ctk.CTk):
         dest_row.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
         dest_row.grid_columnconfigure(0, weight=1)
         ctk.CTkEntry(dest_row, textvariable=self.dest_var,
-                     placeholder_text=f"Default: ./{DOWNLOAD_FOLDER}/  —  e.g. C:\\MyDownloads").grid(
+                     placeholder_text=f"Default: ./{DOWNLOAD_FOLDER}/  —  click Browse to change").grid(
             row=0, column=0, padx=(0, 6), sticky="ew")
         ctk.CTkButton(dest_row, text="Browse", width=80,
                       command=self._browse_dest_dir).grid(row=0, column=1)
@@ -464,6 +494,20 @@ class DownloaderUI(ctk.CTk):
     # UI helpers
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _set_window_icon(self):
+        """Set the window/taskbar icon. .ico works via iconbitmap on Windows;
+        elsewhere (X11/macOS) it needs a PNG passed to iconphoto instead."""
+        try:
+            if platform.system() == "Windows":
+                self.iconbitmap(resource_path(os.path.join("misc", "gui", "icons", "icon.ico")))
+            else:
+                from tkinter import PhotoImage
+                png_path = resource_path(os.path.join("misc", "gui", "icons", "icon.png"))
+                if os.path.isfile(png_path):
+                    self.iconphoto(True, PhotoImage(file=png_path))
+        except Exception:
+            pass
+
     def _toggle_mode(self):
         if self.mode.get() == "url":
             self.url_frame.grid(row=1, column=0, padx=0, pady=(0, 10), sticky="ew")
@@ -494,8 +538,7 @@ class DownloaderUI(ctk.CTk):
 
     def _open_dest(self):
         d = self.dest_var.get().strip() or DOWNLOAD_FOLDER
-        if platform.system() == "Windows" and os.path.isdir(d):
-            os.startfile(d)
+        _open_in_file_manager(d)
 
     def _refresh_album_status(self):
         """Update the bottom status bar — safe to call from any thread."""
@@ -725,7 +768,6 @@ class DownloaderUI(ctk.CTk):
         return [_child_python_exe(), script, sentinel, *extra_args]
 
     def _run_batch(self, urls):
-        import subprocess
         external = self.opt_external_console.get()
         total = len(urls)
         completed = 0
@@ -758,11 +800,25 @@ class DownloaderUI(ctk.CTk):
                 if external:
                     # Detached console with the full Rich UI (progress bars +
                     # log table). No stdout capture, no GUI markers.
-                    cmd = [sys.executable, "downloader.py",
-                           *self._build_downloader_args(url, include_ui_flag=False)]
-                    self._log("  (running in detached console window)\n", tag="dim")
-                    flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-                    self._active_proc = subprocess.Popen(cmd, creationflags=flags)
+                    # A frozen build has no downloader.py next to it, so it
+                    # self-invokes in plain CLI mode instead (see __main__).
+                    entry = ["--cli"] if IS_FROZEN else ["downloader.py"]
+                    dl_cmd = [sys.executable, *entry,
+                              *self._build_downloader_args(url, include_ui_flag=False)]
+                    if platform.system() == "Windows":
+                        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                        self._active_proc = subprocess.Popen(dl_cmd, creationflags=flags)
+                        self._log("  (running in detached console window)\n", tag="dim")
+                    else:
+                        term_prefix = _find_terminal_emulator()
+                        if term_prefix:
+                            self._active_proc = subprocess.Popen([*term_prefix, *dl_cmd])
+                            self._log("  (running in detached console window)\n", tag="dim")
+                        else:
+                            self._log(
+                                "  (no terminal emulator found — running without a "
+                                "detached console)\n", tag="dim")
+                            self._active_proc = subprocess.Popen(dl_cmd)
                     rc = self._active_proc.wait()
                 else:
                     # Hidden child — either the bundled .exe self-invoking in
@@ -806,8 +862,7 @@ class DownloaderUI(ctk.CTk):
 
             # Open destination folder after last download
             dest = self.dest_var.get().strip() or DOWNLOAD_FOLDER
-            if platform.system() == "Windows" and os.path.isdir(dest):
-                os.startfile(dest)
+            _open_in_file_manager(dest)
 
         # Clear the per-file label so it doesn't show stale info
         with self._active_lock:
@@ -872,6 +927,15 @@ if __name__ == "__main__":
         # Strip the sentinel so the downstream argparse sees the real args.
         del sys.argv[1]
         _run_as_gui_runner()
+        sys.exit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--cli":
+        # Plain CLI downloader (full Rich UI) from the frozen build, e.g.
+        # `BunkrDownloader-x86_64.AppImage --cli <url>`.
+        del sys.argv[1]
+        import asyncio
+        import downloader as _d
+        asyncio.run(_d.main())
         sys.exit(0)
 
     app = DownloaderUI()
