@@ -107,6 +107,8 @@ This produces a single portable file, `dist/BunkrDownloader-x86_64.AppImage`, wi
 
 No Python installation is required to run it. Like the Windows `.exe`, the GUI keeps `Downloads/` and `settings.json` next to the `.AppImage` file. It runs on distros with the same or a newer glibc than the machine it was built on. The first build downloads [appimagetool](https://github.com/AppImage/appimagetool) into `build/tools/`.
 
+**Optional CI build:** `.github/workflows/appimage.yml.example` is a GitHub Actions workflow that builds the AppImage on Ubuntu 22.04, so it also runs on older distros, and attaches it to the release when a `GUIv*` tag is pushed. To enable it, rename the file to `appimage.yml`.
+
 ## CLI Usage
 
 The original command-line interface is still available and fully functional.
