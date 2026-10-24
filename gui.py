@@ -73,7 +73,11 @@ def _clamp_int(value, low, high, default):
 
 
 def settings_path():
-    if IS_FROZEN:
+    if os.environ.get("APPIMAGE"):
+        # Inside an AppImage sys.executable lives on a read-only mount; keep
+        # settings next to the .AppImage file instead (portable, like the .exe).
+        base = os.path.dirname(os.environ["APPIMAGE"])
+    elif IS_FROZEN:
         base = os.path.dirname(sys.executable)
     else:
         base = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else os.path.abspath(".")
@@ -796,7 +800,10 @@ class DownloaderUI(ctk.CTk):
                 if external:
                     # Detached console with the full Rich UI (progress bars +
                     # log table). No stdout capture, no GUI markers.
-                    dl_cmd = [sys.executable, "downloader.py",
+                    # A frozen build has no downloader.py next to it, so it
+                    # self-invokes in plain CLI mode instead (see __main__).
+                    entry = ["--cli"] if IS_FROZEN else ["downloader.py"]
+                    dl_cmd = [sys.executable, *entry,
                               *self._build_downloader_args(url, include_ui_flag=False)]
                     if platform.system() == "Windows":
                         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -920,6 +927,15 @@ if __name__ == "__main__":
         # Strip the sentinel so the downstream argparse sees the real args.
         del sys.argv[1]
         _run_as_gui_runner()
+        sys.exit(0)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--cli":
+        # Plain CLI downloader (full Rich UI) from the frozen build, e.g.
+        # `BunkrDownloader-x86_64.AppImage --cli <url>`.
+        del sys.argv[1]
+        import asyncio
+        import downloader as _d
+        asyncio.run(_d.main())
         sys.exit(0)
 
     app = DownloaderUI()

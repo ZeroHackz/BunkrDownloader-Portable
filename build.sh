@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# Builds standalone Linux binaries (CLI + GUI) with PyInstaller.
+# Builds a portable Linux AppImage (GUI + CLI) with PyInstaller + appimagetool.
 set -e
 
-echo "Building BunkrDownloader Linux binaries..."
+APP_NAME="BunkrDownloader"
+ARCH="$(uname -m)"
+APPDIR="build/AppDir"
+TOOLS_DIR="build/tools"
+APPIMAGETOOL="$TOOLS_DIR/appimagetool-$ARCH.AppImage"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage"
+OUTPUT="dist/$APP_NAME-$ARCH.AppImage"
+
+echo "Building $APP_NAME AppImage..."
 
 if [ ! -d venv ]; then
     echo "Virtual environment not found. Running setup_launcher.sh..."
@@ -16,25 +24,66 @@ echo "Installing PyInstaller..."
 pip install --upgrade pyinstaller
 
 echo
-echo "Building CLI binary..."
-pyinstaller --onefile --name bunkrdownloader-cli --noconfirm downloader.py
-
-echo
-echo "Building GUI binary..."
-pyinstaller --onefile --name bunkrdownloader-gui --noconfirm \
+echo "Building application bundle..."
+# --onedir rather than --onefile: the AppImage is already a single file, so a
+# onefile build would only add a second extraction step on every launch.
+pyinstaller --onedir --name "$APP_NAME" --noconfirm \
     --add-data "misc/gui/icons/icon.ico:misc/gui/icons" \
     --add-data "misc/gui/icons/icon.png:misc/gui/icons" \
     gui.py
 
 echo
-echo "Build successful!"
-echo "Binaries are available in the 'dist' folder:"
-echo "  dist/bunkrdownloader-cli"
-echo "  dist/bunkrdownloader-gui"
+echo "Assembling AppDir..."
+rm -rf "$APPDIR"
+mkdir -p "$APPDIR/usr/bin"
+cp -a "dist/$APP_NAME/." "$APPDIR/usr/bin/"
+cp misc/gui/icons/icon.png "$APPDIR/bunkrdownloader.png"
+
+cat > "$APPDIR/bunkrdownloader.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Bunkr Downloader
+Comment=Download albums and files from Bunkr
+Exec=$APP_NAME
+Icon=bunkrdownloader
+Categories=Network;FileTransfer;
+Terminal=false
+EOF
+
+cat > "$APPDIR/AppRun" <<EOF
+#!/bin/sh
+HERE="\$(dirname "\$(readlink -f "\$0")")"
+# GUI launches (no arguments) run from the folder holding the .AppImage, so
+# ./Downloads and settings.json end up next to it, like the portable .exe.
+# CLI usage (--cli <url>) keeps the caller's working directory.
+if [ "\$#" -eq 0 ] && [ -n "\$APPIMAGE" ]; then
+    cd "\$(dirname "\$APPIMAGE")" || exit 1
+fi
+exec "\$HERE/usr/bin/$APP_NAME" "\$@"
+EOF
+chmod +x "$APPDIR/AppRun"
+
+if [ ! -x "$APPIMAGETOOL" ]; then
+    echo
+    echo "Downloading appimagetool..."
+    mkdir -p "$TOOLS_DIR"
+    curl -fL -o "$APPIMAGETOOL" "$APPIMAGETOOL_URL"
+    chmod +x "$APPIMAGETOOL"
+fi
+
 echo
-echo "Note: the GUI binary still needs, at runtime on the target machine:"
-echo "  - Tk libraries (usually already present; if not, install your distro's"
-echo "    'tk' / 'python3-tk' system package)"
+echo "Packing AppImage..."
+# Extract-and-run so building doesn't require FUSE on the build machine.
+ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "$OUTPUT"
+
+echo
+echo "Build successful!"
+echo "AppImage: $OUTPUT"
+echo "  GUI: ./$APP_NAME-$ARCH.AppImage"
+echo "  CLI: ./$APP_NAME-$ARCH.AppImage --cli <bunkr_url>"
+echo
+echo "Note: the AppImage runs on distros with the same or a newer glibc than the"
+echo "build machine. At runtime it also uses:"
 echo "  - xdg-utils (for the \"Open folder\" button)"
 echo "  - a terminal emulator such as xterm/gnome-terminal/konsole (only needed"
 echo "    for the optional \"detailed CLI window\" setting)"

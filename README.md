@@ -92,18 +92,20 @@ cd BunkrDownloader-Portable
 ./launch_gui.sh         # run the GUI
 ```
 
-### Building standalone Linux binaries
+### Building a portable AppImage
 
 ```bash
 ./build.sh
 ```
 
-This produces two self-contained, dependency-free binaries in `dist/`:
+This produces a single portable file, `dist/BunkrDownloader-x86_64.AppImage`, with both interfaces in it:
 
-*   `dist/bunkrdownloader-cli` — the command-line downloader
-*   `dist/bunkrdownloader-gui` — the graphical interface
+```bash
+./BunkrDownloader-x86_64.AppImage                     # GUI
+./BunkrDownloader-x86_64.AppImage --cli <bunkr_url>   # CLI
+```
 
-Both are single-file PyInstaller builds; no Python installation is required to run them on another Linux machine (same architecture, glibc-compatible).
+No Python installation is required to run it. Like the Windows `.exe`, the GUI keeps `Downloads/` and `settings.json` next to the `.AppImage` file. It runs on distros with the same or a newer glibc than the machine it was built on. The first build downloads [appimagetool](https://github.com/AppImage/appimagetool) into `build/tools/`.
 
 ## CLI Usage
 
