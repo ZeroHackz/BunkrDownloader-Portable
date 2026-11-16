@@ -102,7 +102,7 @@ def get_identifier(url: str, soup: BeautifulSoup | None = None) -> str:
     try:
         url_type = resolve_url_type(decoded_url)
         return (
-            get_album_id(decoded_url) if url_type.ALBUM
+            get_album_id(decoded_url) if url_type is UrlType.ALBUM
             else get_media_slug(decoded_url, soup)
         )
 
@@ -135,7 +135,7 @@ def get_media_slug(url: str, soup: BeautifulSoup) -> str:
         return media_slug
 
     # Fallback: try to find slug in script tags
-    for item in soup.find_all("script"):
+    for item in soup.find_all("script") if soup else ():
         script_text = item.get_text()
         match = re.search(MEDIA_SLUG_REGEX, script_text)
         if match:

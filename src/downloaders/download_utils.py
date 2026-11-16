@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import shutil
 import threading
 import time
@@ -26,6 +27,7 @@ from src.config import (
     MIN_WORK_UNIT_SIZE,
     UNITS_PER_CONNECTION,
 )
+from src.enums import HTTPStatus
 from src.misc.file_utils import append_suffix
 from src.models import ChunkInfo, DownloadConfig, DownloadPlan
 
@@ -41,6 +43,41 @@ def get_chunk_size(file_size: int) -> int:
             return chunk_size
 
     return DEFAULT_CHUNK_SIZE
+
+
+def _stream_size(response: Response, offset: int) -> int | None:
+    """Validate a streaming response before writing to a partial file."""
+    try:
+        content_length = int(response.headers.get("Content-Length", -1))
+
+    except ValueError:
+        return None
+
+    if response.status_code == HTTPStatus.OK:
+        return content_length if content_length >= -1 else None
+
+    if response.status_code != HTTPStatus.PARTIAL_CONTENT:
+        return None
+
+    content_range = re.fullmatch(
+        r"bytes (\d+)-(\d+)/(\d+)",
+        response.headers.get("Content-Range", ""),
+    )
+
+    if content_range is None:
+        return None
+
+    start, end, total = map(int, content_range.groups())
+    if start != offset or end < start or end != total - 1:
+        return None
+
+    if content_length not in (-1, end - start + 1):
+        return None
+
+    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+        return None
+
+    return total
 
 
 def save_file_with_progress(
@@ -60,16 +97,26 @@ def save_file_with_progress(
         True on failure (partial file kept), False on success.
 
     """
-    file_size = int(response.headers.get("Content-Length", -1))
+    temp_download_path = append_suffix(download_path, ".temp")
+    offset = (
+        temp_download_path.stat().st_size
+        if response.status_code == HTTPStatus.PARTIAL_CONTENT
+        and temp_download_path.exists()
+        else 0
+    )
+    file_size = _stream_size(response, offset)
+
+    if file_size is None:
+        return True
+
     if file_size == -1:
         logging.warning("Content length not provided in response headers.")
 
-    temp_download_path = append_suffix(download_path, ".temp")
     chunk_size = get_chunk_size(file_size)
-    total_downloaded = 0
+    total_downloaded = offset
 
     try:
-        with temp_download_path.open("wb") as file:
+        with temp_download_path.open("ab" if offset else "wb") as file:
             for chunk in response.iter_content(chunk_size=chunk_size):
                 if chunk is not None:
                     file.write(chunk)
@@ -78,14 +125,16 @@ def save_file_with_progress(
                         rate_limiter.consume(len(chunk))
 
                     total_downloaded += len(chunk)
-                    completed = (total_downloaded / file_size) * 100
-                    live_manager.update_task(task, completed=completed)
+                    if file_size > 0:
+                        completed = min((total_downloaded / file_size) * 100, 99.0)
+                        live_manager.update_task(task, completed=completed)
 
-    except ChunkedEncodingError:
+    except (ChunkedEncodingError, RequestException):
         return True
 
-    if total_downloaded == file_size:
+    if total_downloaded == file_size or (file_size == -1 and total_downloaded > 0):
         shutil.move(temp_download_path, download_path)
+        live_manager.update_task(task, completed=100, visible=False)
         return False
 
     return True
@@ -337,7 +386,7 @@ def download_chunks(
             total_downloaded[0] += num_bytes
             completed = min(
                 (total_downloaded[0] / download_config.content_length) * 100,
-                100.0,
+                99.0,
             )
             live_manager.update_task(task, completed=completed)
 
@@ -441,4 +490,5 @@ def save_file_with_chunks(
 
     merge_chunks(chunk_paths, base_path)
     cleanup(chunk_paths, base_path)
+    live_manager.update_task(task, completed=100, visible=False)
     return False

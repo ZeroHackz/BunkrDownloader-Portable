@@ -22,9 +22,10 @@ from src.crawlers.crawler_utils import (
     has_cached_item_pages,
 )
 from src.downloaders.album_downloader import AlbumDownloader, MediaDownloader
-from src.enums import SkippedReason
+from src.enums import FailedReason, SkippedReason
 from src.managers.live_manager import initialize_managers
 from src.managers.rate_limiter import RateLimiter
+from src.managers.session_manager import configure_session
 from src.managers.state_manager import load_album_state, save_album_state
 from src.misc.args_utils import parse_arguments
 from src.misc.file_utils import (
@@ -147,6 +148,14 @@ async def handle_download_process(
     )
     live_manager.add_overall_task(identifier, num_tasks=1)
     task = live_manager.add_task()
+    if not download_link:
+        live_manager.update_log(
+            event="Download failed",
+            details=f"Could not resolve a download URL for {filename}.",
+        )
+        live_manager.update_task(task, completed=100, visible=False)
+        live_manager.update_summary(FailedReason.MAX_RETRIES_REACHED)
+        return True
 
     media_downloader = MediaDownloader(
         session_info=session_info,
@@ -158,9 +167,9 @@ async def handle_download_process(
             item_date=item_date,
         ),
         live_manager=live_manager,
-        retry_config=RetryConfig(),
+        retry_config=RetryConfig(retries=max_retries),
     )
-    return media_downloader.download()
+    return await asyncio.to_thread(media_downloader.download)
 
 
 async def prepare_session(
@@ -269,7 +278,7 @@ async def validate_and_download(
             args.max_retries,
         )
 
-    except (RequestConnectionError, Timeout, RequestException) as err:
+    except (RequestConnectionError, Timeout, RequestException, RuntimeError) as err:
         error_message = f"Error downloading from {url}: {err}"
         write_on_session_log(
             error_message,
@@ -292,6 +301,7 @@ async def main() -> None:
         await execute_dry_run_for_url(bunkr_status, args.url, args, Console())
         return
 
+    configure_session(args)
     rate_limiter = RateLimiter(args.rate_limit * KB if args.rate_limit else None)
     live_manager = initialize_managers(disable_ui=args.disable_ui)
 

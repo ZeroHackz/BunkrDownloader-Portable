@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 # ============================
 # Paths and Files
 # ============================
-BACKUP_FOLDER = "Backups"      # The folder where backup files will be stored.
-DOWNLOAD_FOLDER = "Downloads"  # The folder where downloaded files will be stored.
-URLS_FILE = "URLs.txt"         # The file containing the list of URLs to process.
-SESSION_LOG = "session.log"    # The file used to log errors.
-STATE_FILE = ".bunkr_state.json"
+BACKUP_FOLDER = "Backups"         # The folder where backup files will be stored.
+DOWNLOAD_FOLDER = "Downloads"     # The folder where downloaded files will be stored.
+URLS_FILE = "URLs.txt"            # The file containing the list of URLs to process.
+SESSION_LOG = "session.log"       # The file used to log errors.
+STATE_FILE = ".bunkr_state.json"  # The file used to store the download state.
 
 # ============================
 # API / Status Endpoints
@@ -155,6 +155,8 @@ DOWNLOAD_HEADERS: dict[str, str] = {
 # default below. All CLI args participating in this need default=None so an unset flag
 # can be distinguished from an explicit one.
 _CONFIG_FIELDS: dict[str, tuple[object, object]] = {
+    "session_id": (None, lambda v: isinstance(v, str)),
+    "verbose": (False, lambda v: isinstance(v, bool)),
     "custom_path": (None, lambda v: isinstance(v, str)),
     "no_download_folder": (False, lambda v: isinstance(v, bool)),
     "no_album_folder": (False, lambda v: isinstance(v, bool)),
