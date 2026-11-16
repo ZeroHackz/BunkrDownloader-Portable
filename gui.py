@@ -60,6 +60,7 @@ DEFAULT_SETTINGS = {
     "no_disk_check": False,
     "no_download_folder": False,
     "external_console": False,
+    "disable_server_check": False,
 }
 
 
@@ -416,6 +417,12 @@ class DownloaderUI(ctk.CTk):
             row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
         row += 1
 
+        self.opt_disable_server_check = ctk.BooleanVar(value=self._settings["disable_server_check"])
+        ctk.CTkCheckBox(tab, text="Skip server status check (download from offline-marked domains)",
+                        variable=self.opt_disable_server_check).grid(
+            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
+        row += 1
+
         self.opt_no_dl_folder = ctk.BooleanVar(value=self._settings["no_download_folder"])
         ctk.CTkCheckBox(tab,
                         text='Skip the "Downloads" subfolder when using the default path '
@@ -529,6 +536,7 @@ class DownloaderUI(ctk.CTk):
             "no_disk_check": bool(self.opt_no_disk_check.get()),
             "no_download_folder": bool(self.opt_no_dl_folder.get()),
             "external_console": bool(self.opt_external_console.get()),
+            "disable_server_check": bool(self.opt_disable_server_check.get()),
         }
 
     def _on_close(self):
@@ -656,6 +664,8 @@ class DownloaderUI(ctk.CTk):
         args += ["--max-retries", str(int(self.retries_slider.get()))]
         if self.opt_no_disk_check.get():
             args.append("--disable-disk-check")
+        if self.opt_disable_server_check.get():
+            args.append("--disable-server-check")
         if dest or self.opt_no_dl_folder.get():
             args.append("--no-download-folder")
 
